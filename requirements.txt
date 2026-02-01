@@ -1,0 +1,27 @@
+# Core dependencies
+runpod>=1.7.0
+torch>=2.1.0
+torchvision>=0.16.0
+transformers>=4.36.0
+diffusers>=0.24.0
+accelerate>=0.25.0
+xformers>=0.0.23
+
+# Media processing
+opencv-python>=4.8.0
+pillow>=10.0.0
+imageio>=2.34.0
+imageio-ffmpeg>=0.4.9
+
+# Cloud storage
+boto3>=1.34.0
+google-cloud-storage>=2.10.0
+
+# Utilities
+requests>=2.31.0
+numpy>=1.24.0
+scipy>=1.11.0
+tqdm>=4.66.0
+
+# Optional optimizations
+# flash-attn>=2.5.0; sys_platform == "linux"
