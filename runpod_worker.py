@@ -192,8 +192,7 @@ def handler(job):
         }
 
 # Initialize models on worker startup
-if __name__ == "__main__":
-    print("🚀 Initializing LTX2 worker...")
-    initialize_models()
-    print("🎯 Starting RunPod serverless worker")
-    runpod.serverless.start({"handler": handler})
+print("🚀 Initializing LTX2 worker...")
+initialize_models()
+print("🚀 Starting RunPod serverless worker")
+runpod.serverless.start({"handler": handler})
