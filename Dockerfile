@@ -39,7 +39,7 @@ RUN wget -O /models/ltx-2-19b-distilled-lora-384.safetensors \
     https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-19b-distilled-lora-384.safetensors
 
 # Download Gemma text encoder (smaller version for faster startup)
-RUN git clone https://huggingface.co/google/gemma-3-12b-it-qat-q4_0-unquantized /models/gemma-3-12b
+#RUN git clone https://huggingface.co/google/gemma-3-12b-it-qat-q4_0-unquantized /models/gemma-3-12b
 
 # Set back to app directory
 WORKDIR /app
