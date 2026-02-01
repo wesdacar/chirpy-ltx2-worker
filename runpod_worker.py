@@ -192,7 +192,5 @@ def handler(job):
         }
 
 # Initialize models on worker startup
-print("🚀 Initializing LTX2 worker...")
-initialize_models()
-print("🚀 Starting RunPod serverless worker")
+print("🚀 Starting RunPod serverless worker (no startup model load)")
 runpod.serverless.start({"handler": handler})
