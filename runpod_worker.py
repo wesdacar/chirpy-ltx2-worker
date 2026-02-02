@@ -87,7 +87,9 @@ def generate_video_ltx2(job):
     """Main video generation handler"""
     try:
         # Extract parameters from job input
-        job_input = job.get('input', {})
+        job_input = job.get('input', {}) or {}
+        if isinstance(job_input, dict) and "input" in job_input and isinstance(job_input["input"], dict):
+            job_input = job_input["input"]
         prompt = job_input.get('prompt', '')
         
         if not prompt:
@@ -242,18 +244,18 @@ def generate_video_smoke(job):
 
 def handler(job):
     """RunPod handler function"""
-    job_id = job.get('id', 'unknown')
-    print(f"📝 Processing job {job_id}")
-
-    try:
-        def handler(job):
-    """RunPod handler function"""
-    job_id = job.get('id', 'unknown')
+    job_id = job.get("id", "unknown")
     print(f"📝 Processing job {job_id}")
 
     try:
         job_input = job.get("input", {}) or {}
-        mode = job_input.get("mode", "smoke")  # ✅ properly inside try
+
+        # If RunPod UI double-wraps input, unwrap one level
+        if isinstance(job_input, dict) and "input" in job_input and isinstance(job_input["input"], dict):
+            job_input = job_input["input"]
+
+        mode = (job_input.get("mode", "smoke") or "smoke").lower()
+        print(f"🧭 mode={mode}")
 
         if mode == "ltx2":
             result = generate_video_ltx2(job)
@@ -270,17 +272,6 @@ def handler(job):
             "error": str(e),
             "job_id": job_id
         }
-        print(f"✅ Job {job_id} completed successfully")
-        return result
-
-    except Exception as e:
-        print(f"❌ Job {job_id} failed: {str(e)}")
-        return {
-            "success": False,
-            "error": str(e),
-            "job_id": job_id
-        }
-
 # Initialize models on worker startup
 print("🚀 Starting RunPod serverless worker (no startup model load)")
 runpod.serverless.start({"handler": handler})
