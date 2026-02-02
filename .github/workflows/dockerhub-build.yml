@@ -37,4 +37,4 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/chirpy-ltx2-worker:0.5
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/chirpy-ltx2-worker:0.7
