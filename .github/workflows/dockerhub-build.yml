@@ -37,4 +37,6 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/chirpy-ltx2-worker:0.7
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/chirpy-ltx2-worker:0.5
+          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/chirpy-ltx2-worker:buildcache
+          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/chirpy-ltx2-worker:buildcache,mode=max
