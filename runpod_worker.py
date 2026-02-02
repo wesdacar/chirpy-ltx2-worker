@@ -3,6 +3,11 @@ LTX2 Video Generation RunPod Worker
 Serverless endpoint for Chirpy.me video generation
 """
 
+import os
+import uuid
+import subprocess
+import boto3
+from botocore.config import Config
 import runpod
 import torch
 import os
@@ -172,19 +177,68 @@ def generate_video(job):
             "error": str(e),
             "error_type": type(e).__name__
         }
-        
+
+def upload_file_to_r2(local_path: str, content_type: str = "video/mp4") -> str:
+    """
+    Uploads a file to Cloudflare R2 (S3-compatible) and returns a presigned URL.
+    (You said no public base URL yet, so presigned is perfect.)
+    """
+    endpoint = os.environ["R2_ENDPOINT"]
+    access_key = os.environ["R2_ACCESS_KEY_ID"]
+    secret_key = os.environ["R2_SECRET_ACCESS_KEY"]
+    bucket = os.environ["R2_BUCKET"]
+
+    key = f"ltx2/{uuid.uuid4().hex}.mp4"
+
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        config=Config(signature_version="s3v4"),
+        region_name="auto",
+    )
+
+    s3.upload_file(
+        Filename=local_path,
+        Bucket=bucket,
+        Key=key,
+        ExtraArgs={"ContentType": content_type},
+    )
+
+    return s3.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": bucket, "Key": key},
+        ExpiresIn=60 * 60,  # 1 hour
+    )
+
 def generate_video(job):
-    """
-    Temporary safe implementation.
-    Confirms generate_video is callable and serverless is wired correctly.
-    """
-    prompt = (job.get("input") or {}).get("prompt", "")
+    prompt = (job.get("input") or {}).get("prompt", "Hello")
+    out_mp4 = "/tmp/ltx2_smoke_test.mp4"
+
+    # Create a tiny 1-second MP4 (black screen) so we can test R2 upload fast.
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi",
+            "-i", "color=c=black:s=1280x720:r=24",
+            "-t", "1",
+            "-pix_fmt", "yuv420p",
+            out_mp4
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    video_url = upload_file_to_r2(out_mp4)
+
     return {
         "success": True,
-        "message": "generate_video() is callable and worker is healthy",
-        "echo": prompt
+        "message": "R2 upload smoke test succeeded",
+        "echo": prompt,
+        "video_url": video_url
     }
-
 
 def handler(job):
     """RunPod handler function"""
