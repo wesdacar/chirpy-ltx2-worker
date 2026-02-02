@@ -172,17 +172,30 @@ def generate_video(job):
             "error": str(e),
             "error_type": type(e).__name__
         }
+        
+def generate_video(job):
+    """
+    Temporary safe implementation.
+    Confirms generate_video is callable and serverless is wired correctly.
+    """
+    prompt = (job.get("input") or {}).get("prompt", "")
+    return {
+        "success": True,
+        "message": "generate_video() is callable and worker is healthy",
+        "echo": prompt
+    }
+
 
 def handler(job):
     """RunPod handler function"""
     job_id = job.get('id', 'unknown')
     print(f"📝 Processing job {job_id}")
-    
+
     try:
         result = generate_video(job)
         print(f"✅ Job {job_id} completed successfully")
         return result
-        
+
     except Exception as e:
         print(f"❌ Job {job_id} failed: {str(e)}")
         return {
