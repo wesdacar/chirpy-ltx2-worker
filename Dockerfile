@@ -22,7 +22,6 @@ RUN uv pip install --system -r requirements.txt
 # Clone and install LTX2
 RUN git clone https://github.com/Lightricks/LTX-2.git /tmp/ltx2
 WORKDIR /tmp/ltx2
-RUN uv sync --frozen
 RUN uv pip install --system -e .
 
 # Create models directory
