@@ -83,7 +83,7 @@ def upload_to_s3(video_path, bucket_name, s3_key):
         print(f"S3 upload failed: {e}")
         return None
 
-def generate_video(job):
+def generate_video_ltx2(job):
     """Main video generation handler"""
     try:
         # Extract parameters from job input
@@ -212,7 +212,7 @@ def upload_file_to_r2(local_path: str, content_type: str = "video/mp4") -> str:
         ExpiresIn=60 * 60,  # 1 hour
     )
 
-def generate_video(job):
+def generate_video_smoke(job):
     prompt = (job.get("input") or {}).get("prompt", "Hello")
     out_mp4 = "/tmp/ltx2_smoke_test.mp4"
 
@@ -246,7 +246,30 @@ def handler(job):
     print(f"📝 Processing job {job_id}")
 
     try:
-        result = generate_video(job)
+        def handler(job):
+    """RunPod handler function"""
+    job_id = job.get('id', 'unknown')
+    print(f"📝 Processing job {job_id}")
+
+    try:
+        job_input = job.get("input", {}) or {}
+        mode = job_input.get("mode", "smoke")  # ✅ properly inside try
+
+        if mode == "ltx2":
+            result = generate_video_ltx2(job)
+        else:
+            result = generate_video_smoke(job)
+
+        print(f"✅ Job {job_id} completed successfully")
+        return result
+
+    except Exception as e:
+        print(f"❌ Job {job_id} failed: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "job_id": job_id
+        }
         print(f"✅ Job {job_id} completed successfully")
         return result
 
