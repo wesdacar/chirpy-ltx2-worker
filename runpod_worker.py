@@ -124,7 +124,7 @@ def generate_video_smoke(job_input: Dict[str, Any]) -> Dict[str, Any]:
 # ---------------------------
 # LTX2 models (download at runtime)
 # ---------------------------
-MODELS_DIR = os.getenv("MODEL_PATH", "/models")
+MODELS_DIR = os.getenv("MODEL_PATH", "/workspace/models")
 
 LTX2_FILES = [
     ("ltx-2-19b-distilled-fp8.safetensors",
