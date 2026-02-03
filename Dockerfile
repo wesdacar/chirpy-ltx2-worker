@@ -60,13 +60,13 @@ RUN python -c "import ltx_core, ltx_pipelines; print('LTX2 import OK')"
 RUN mkdir -p /models
 
 # Download LTX2 model files
-RUN wget -O /models/ltx-2-19b-distilled-fp8.safetensors \
+# RUN wget -O /models/ltx-2-19b-distilled-fp8.safetensors \
     https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-19b-distilled-fp8.safetensors
 
-RUN wget -O /models/ltx-2-spatial-upscaler-x2-1.0.safetensors \
+# RUN wget -O /models/ltx-2-spatial-upscaler-x2-1.0.safetensors \
     https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-spatial-upscaler-x2-1.0.safetensors
 
-RUN wget -O /models/ltx-2-19b-distilled-lora-384.safetensors \
+# RUN wget -O /models/ltx-2-19b-distilled-lora-384.safetensors \
     https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-19b-distilled-lora-384.safetensors
 
 # Download Gemma text encoder (smaller version for faster startup)
