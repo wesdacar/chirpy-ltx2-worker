@@ -21,13 +21,23 @@ import boto3
 from botocore.exceptions import NoCredentialsError
 
 # Import LTX2 pipeline (will be available after model installation)
+LTX_AVAILABLE = False
+LTX_IMPORT_ERROR = None
+
 try:
-    from ltx_pipelines import TI2VidTwoStagesPipeline, DistilledPipeline
-    from ltx_core.models import LTXVideoTransformer
+    # Most common if installed as a package
+    from ltx.pipelines import TI2VidTwoStagesPipeline, DistilledPipeline
+    from ltx.core.models import LTXVideoTransformer
     LTX_AVAILABLE = True
-except ImportError:
-    LTX_AVAILABLE = False
-    print("LTX2 not available - worker will fail")
+except Exception as e1:
+    try:
+    # Fallback: older/alt module layout
+        from ltx_pipelines import TI2VidTwoStagesPipeline, DistilledPipeline
+        from ltx_core.models import LTXVideoTransformer
+        LTX_AVAILABLE = True
+    except Exception as e2:
+        LTX_IMPORT_ERROR = f"{type(e2).__name__}: {str(e2)}"
+        print(f"❌ LTX2 import failed: {LTX_IMPORT_ERROR}")
 
 # Global variables for model loading
 pipeline = None
@@ -38,7 +48,7 @@ def initialize_models():
     global pipeline, fast_pipeline
     
     if not LTX_AVAILABLE:
-        raise RuntimeError("LTX2 packages not available")
+        raise RuntimeError(f"LTX2 packages not available. Import error: {LTX_IMPORT_ERROR}")
     
     model_path = os.getenv("MODEL_PATH", "/models")
     
