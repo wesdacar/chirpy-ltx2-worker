@@ -57,7 +57,7 @@ PY
 RUN python -c "import ltx_core, ltx_pipelines; print('LTX2 import OK')"
 
 # Create models directory
-RUN mkdir -p /models
+# RUN mkdir -p /models
 
 # Download LTX2 model files
 # RUN wget -O /models/ltx-2-19b-distilled-fp8.safetensors \
