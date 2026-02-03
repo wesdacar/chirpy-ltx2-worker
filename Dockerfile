@@ -78,6 +78,12 @@ ENV PYTHONPATH=/app
 # Copy worker code
 COPY runpod_worker.py .
 
+# Fail early if the worker file has syntax errors
+RUN python -m py_compile /app/runpod_worker.py
+
+# Fail early if imports crash
+RUN python -c "import runpod_worker; print('runpod_worker import OK')"
+
 # Set environment variables
 ENV MODEL_PATH="/models"
 ENV PYTHONPATH="/tmp/ltx2:$PYTHONPATH"
