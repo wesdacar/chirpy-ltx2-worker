@@ -34,14 +34,13 @@ try:
     LTX_AVAILABLE = True
 except Exception as e1:
     try:
-    # Fallback: older/alt module layout
+        # Fallback: older/alt module layout
         from ltx_pipelines import TI2VidTwoStagesPipeline, DistilledPipeline
         from ltx_core.models import LTXVideoTransformer
         LTX_AVAILABLE = True
     except Exception as e2:
         LTX_IMPORT_ERROR = f"{type(e2).__name__}: {str(e2)}"
         print(f"❌ LTX2 import failed: {LTX_IMPORT_ERROR}")
-
 # Global variables for model loading
 pipeline = None
 fast_pipeline = None
