@@ -104,6 +104,11 @@ def generate_video_ltx2(job):
         
         # Calculate frames
         num_frames = duration * fps
+
+        # Lazy-load models on first LTX2 request
+        global pipeline, fast_pipeline
+        if pipeline is None or fast_pipeline is None:
+            initialize_models()
         
         # Select pipeline based on quality preference
         selected_pipeline = pipeline if quality == 'high' else fast_pipeline
