@@ -2,7 +2,6 @@
 LTX2 Video Generation RunPod Worker
 Serverless endpoint for Chirpy.me video generation
 """
-
 import os
 import uuid
 import subprocess
@@ -22,6 +21,27 @@ from botocore.exceptions import NoCredentialsError
 
 WORKER_VERSION = "v-importfix-1"
 print(f"✅ Worker booted: {WORKER_VERSION}")
+
+MODELS_DIR = "/models"
+
+LTX2_FILES = [
+    ("ltx-2-19b-distilled-fp8.safetensors",
+     "https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-19b-distilled-fp8.safetensors"),
+    ("ltx-2-spatial-upscaler-x2-1.0.safetensors",
+     "https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-spatial-upscaler-x2-1.0.safetensors"),
+    ("ltx-2-19b-distilled-lora-384.safetensors",
+     "https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-19b-distilled-lora-384.safetensors"),
+]
+
+def ensure_models():
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    for fname, url in LTX2_FILES:
+        path = os.path.join(MODELS_DIR, fname)
+        if not os.path.exists(path):
+            print(f"⬇️ Downloading {fname}...")
+            subprocess.check_call(["wget", "-O", path, url])
+        else:
+            print(f"✅ Already have {fname}")
 
 # Import LTX2 pipeline (will be available after model installation)
 LTX_AVAILABLE = False
@@ -285,7 +305,16 @@ def handler(job):
         print(f"🧭 mode={mode}")
 
         if mode == "ltx2":
+            ensure_models()
+
+            global pipeline, fast_pipeline
+            if pipeline is None or fast_pipeline is None:
+                print("🚀 Pipelines missing -> initialize_models()")
+                initialize_models()
+                print(f"✅ Pipelines ready: pipeline={type(pipeline)}, fast_pipeline={type(fast_pipeline)}")
+
             result = generate_video_ltx2(job)
+        
         else:
             result = generate_video_smoke(job)
 
