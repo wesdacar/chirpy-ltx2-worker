@@ -33,7 +33,17 @@ RUN python -c "import importlib.util; print('torchvision spec AFTER:', importlib
 
 # Force Gemma 3 capable transformers right before import
 RUN uv pip install --system --upgrade --no-cache-dir "git+https://github.com/huggingface/transformers@v4.49.0-Gemma-3"
-RUN python -c "import transformers; print('transformers=', transformers.__version__); from transformers import Gemma3ForConditionalGeneration; print('Gemma3 class OK')"
+RUN python - <<'PY'
+import traceback, transformers
+print("transformers=", transformers.__version__)
+try:
+    from transformers import Gemma3ForConditionalGeneration
+    print("Gemma3 class OK")
+except Exception as e:
+    print("Gemma3 import FAILED:", repr(e))
+    traceback.print_exc()
+    raise
+PY
 
 # ✅ SANITY CHECK (this makes the build fail if LTX2 isn’t importable)
 RUN python -c "import ltx_core, ltx_pipelines; print('LTX2 import OK')"
