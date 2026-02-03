@@ -19,6 +19,10 @@ RUN pip install uv
 COPY requirements.txt .
 RUN uv pip install --system -r requirements.txt
 
+# Fix torchvision mismatch with torch in base image (prevents "torchvision::nms does not exist")
+RUN pip uninstall -y torchvision || true
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu121 torchvision==0.17.0
+
 # Clone LTX2 (monorepo)
 RUN git clone https://github.com/Lightricks/LTX-2.git /tmp/ltx2
 
