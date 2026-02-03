@@ -29,6 +29,10 @@ RUN uv pip install --system "git+https://github.com/huggingface/transformers@v4.
 RUN uv pip install --system /tmp/ltx2/packages/ltx-core
 RUN uv pip install --system /tmp/ltx2/packages/ltx-pipelines
 
+# Force Gemma 3 capable transformers right before import
+RUN uv pip install --system --upgrade --no-cache-dir "git+https://github.com/huggingface/transformers@v4.49.0-Gemma-3"
+RUN python -c "import transformers; print('transformers=', transformers.__version__); from transformers import Gemma3ForConditionalGeneration; print('Gemma3 class OK')"
+
 # ✅ SANITY CHECK (this makes the build fail if LTX2 isn’t importable)
 RUN python -c "import ltx_core, ltx_pipelines; print('LTX2 import OK')"
 
