@@ -22,12 +22,14 @@ RUN uv pip install --system -r requirements.txt
 # Clone LTX2 (monorepo)
 RUN git clone https://github.com/Lightricks/LTX-2.git /tmp/ltx2
 
-# Gemma 3 support (required by LTX-2 pipelines import)
-RUN uv pip install --system "git+https://github.com/huggingface/transformers@v4.49.0-Gemma-3"
-
 # Install LTX2 subpackages explicitly (this is the key fix)
 RUN uv pip install --system /tmp/ltx2/packages/ltx-core
 RUN uv pip install --system /tmp/ltx2/packages/ltx-pipelines
+
+# Fix: base image torchvision is incompatible (operator torchvision::nms does not exist)
+RUN python -c "import importlib.util; print('torchvision spec BEFORE:', importlib.util.find_spec('torchvision'))" || true
+RUN uv pip uninstall -y torchvision || true
+RUN python -c "import importlib.util; print('torchvision spec AFTER:', importlib.util.find_spec('torchvision'))" || true
 
 # Force Gemma 3 capable transformers right before import
 RUN uv pip install --system --upgrade --no-cache-dir "git+https://github.com/huggingface/transformers@v4.49.0-Gemma-3"
