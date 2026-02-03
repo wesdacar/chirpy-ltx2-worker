@@ -32,7 +32,7 @@ RUN uv pip install --system /tmp/ltx2/packages/ltx-pipelines
 
 # Fix: base image torchvision is incompatible (operator torchvision::nms does not exist)
 RUN python -c "import importlib.util; print('torchvision spec BEFORE:', importlib.util.find_spec('torchvision'))" || true
-RUN uv pip uninstall -y torchvision || true
+RUN pip uninstall -y torchvision || true
 RUN python -c "import importlib.util; print('torchvision spec AFTER:', importlib.util.find_spec('torchvision'))" || true
 
 # Force Gemma 3 capable transformers right before import
