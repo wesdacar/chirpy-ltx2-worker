@@ -20,6 +20,9 @@ import uuid
 import boto3
 from botocore.exceptions import NoCredentialsError
 
+WORKER_VERSION = "v-importfix-1"
+print(f"✅ Worker booted: {WORKER_VERSION}")
+
 # Import LTX2 pipeline (will be available after model installation)
 LTX_AVAILABLE = False
 LTX_IMPORT_ERROR = None
@@ -288,6 +291,8 @@ def handler(job):
             result = generate_video_smoke(job)
 
         print(f"✅ Job {job_id} completed successfully")
+        if isinstance(result, dict):
+            result["worker_version"] = WORKER_VERSION
         return result
 
     except Exception as e:
@@ -296,6 +301,7 @@ def handler(job):
             "success": False,
             "error": str(e),
             "job_id": job_id
+            "worker_version": WORKER_VERSION
         }
 # Initialize models on worker startup
 print("🚀 Starting RunPod serverless worker (no startup model load)")
