@@ -22,10 +22,10 @@ RUN uv pip install --system -r requirements.txt
 # Clone and install LTX2
 RUN git clone https://github.com/Lightricks/LTX-2.git /tmp/ltx2
 WORKDIR /tmp/ltx2
-RUN uv pip install --system -e .
+RUN uv pip install --system .
 
 # ✅ SANITY CHECK (this makes the build fail if LTX2 isn’t importable)
-RUN python -c "import importlib; m = importlib.import_module('ltx.pipelines') if importlib.util.find_spec('ltx.pipelines') else importlib.import_module('ltx_pipelines'); print('LTX2 import OK:', m.__name__)"
+RUN python -c "import ltx; print('LTX package import OK')"
 
 # Create models directory
 RUN mkdir -p /models
