@@ -32,7 +32,11 @@ RUN uv pip uninstall -y torchvision || true
 RUN python -c "import importlib.util; print('torchvision spec AFTER:', importlib.util.find_spec('torchvision'))" || true
 
 # Force Gemma 3 capable transformers right before import
-RUN uv pip install --system --upgrade --no-cache-dir "git+https://github.com/huggingface/transformers@v4.49.0-Gemma-3"
+ENV TRANSFORMERS_NO_TORCHVISION=1
+
+RUN uv pip install --system --upgrade --no-cache-dir \
+    "git+https://github.com/huggingface/transformers@v4.49.0-Gemma-3"
+
 RUN python - <<'PY'
 import traceback, transformers
 print("transformers=", transformers.__version__)
