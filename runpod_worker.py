@@ -290,48 +290,28 @@ def generate_video_smoke(job):
     }
 
 def handler(job):
-    """RunPod handler function"""
     job_id = job.get("id", "unknown")
     print(f"📝 Processing job {job_id}")
 
     try:
-        # Unwrap input safely (RunPod UI sometimes double-wraps)
         job_input = job.get("input") or {}
+
+        # If RunPod UI double-wraps input, unwrap one level
         if isinstance(job_input, dict) and isinstance(job_input.get("input"), dict):
             job_input = job_input["input"]
 
-        mode = (job_input.get("mode") or "smoke").lower()
+        mode = (job_input.get("mode", "smoke") or "smoke").lower()
         print(f"🧭 mode={mode}")
 
         if mode == "ltx2":
-            # Make sure model weights exist, then lazy-load pipelines if needed
-            ensure_models()
-
-            global pipeline, fast_pipeline
-            if pipeline is None or fast_pipeline is None:
-                print("🚀 Pipelines missing -> initialize_models()")
-                initialize_models()
-                print(f"✅ Pipelines ready: pipeline={type(pipeline)}, fast_pipeline={type(fast_pipeline)}")
-
-            result = generate_video_ltx2(job)
+            return generate_video_ltx2(job)
         else:
-            result = generate_video_smoke(job)
-
-        print(f"✅ Job {job_id} completed successfully")
-
-        if isinstance(result, dict):
-            result["worker_version"] = WORKER_VERSION
-
-        return result
+            return generate_video_smoke(job)
 
     except Exception as e:
         print(f"❌ Job {job_id} failed: {e}")
-        return {
-            "success": False,
-            "error": str(e),
-            "job_id": job_id,
-            "worker_version": WORKER_VERSION
-        }
+        return {"success": False, "job_id": job_id, "error": str(e), "error_type": type(e).__name__}
+        
 # Initialize models on worker startup
 print("🚀 Starting RunPod serverless worker (no startup model load)")
 runpod.serverless.start({"handler": handler})
