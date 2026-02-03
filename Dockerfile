@@ -25,7 +25,7 @@ WORKDIR /tmp/ltx2
 RUN uv pip install --system .
 
 # ✅ SANITY CHECK (this makes the build fail if LTX2 isn’t importable)
-RUN python -c "import ltx; print('LTX package import OK')"
+RUN python -c "import ltx_pipelines, ltx_core; print('LTX2 import OK')"
 
 # Create models directory
 RUN mkdir -p /models
