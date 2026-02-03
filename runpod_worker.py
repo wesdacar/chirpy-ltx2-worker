@@ -301,22 +301,24 @@ def handler(job):
         if isinstance(job_input, dict) and "input" in job_input and isinstance(job_input["input"], dict):
             job_input = job_input["input"]
 
-        mode = (job_input.get("mode", "smoke") or "smoke").lower()
-        print(f"🧭 mode={mode}")
+mode = (job_input.get("mode", "smoke") or "smoke").lower()
+print(f"🧪 mode={mode}")
 
-        if mode == "ltx2":
-            ensure_models()
+if mode == "ltx2":
+    ensure_models()
 
-            global pipeline, fast_pipeline
-            if pipeline is None or fast_pipeline is None:
-                print("🚀 Pipelines missing -> initialize_models()")
-                initialize_models()
-                print(f"✅ Pipelines ready: pipeline={type(pipeline)}, fast_pipeline={type(fast_pipeline)}")
+    global pipeline, fast_pipeline
+    if pipeline is None or fast_pipeline is None:
+        print("🚀 Pipelines missing -> initialize_models()")
+        initialize_models()
+        print(
+            f"✅ Pipelines ready: "
+            f"pipeline={type(pipeline)}, fast_pipeline={type(fast_pipeline)}"
+        )
 
-            result = generate_video_ltx2(job)
-        
-        else:
-            result = generate_video_smoke(job)
+    result = generate_video_ltx2(job)
+else:
+    result = generate_video_smoke(job)
 
         print(f"✅ Job {job_id} completed successfully")
         if isinstance(result, dict):
