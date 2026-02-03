@@ -19,13 +19,15 @@ RUN pip install uv
 COPY requirements.txt .
 RUN uv pip install --system -r requirements.txt
 
-# Clone and install LTX2
+# Clone LTX2 (monorepo)
 RUN git clone https://github.com/Lightricks/LTX-2.git /tmp/ltx2
-WORKDIR /tmp/ltx2
-RUN uv pip install --system .
+
+# Install LTX2 subpackages explicitly (this is the key fix)
+RUN uv pip install --system /tmp/ltx2/packages/ltx-core
+RUN uv pip install --system /tmp/ltx2/packages/ltx-pipelines
 
 # ✅ SANITY CHECK (this makes the build fail if LTX2 isn’t importable)
-RUN python -c "import ltx_pipelines, ltx_core; print('LTX2 import OK')"
+RUN python -c "import ltx_core, ltx_pipelines; print('LTX2 import OK')"
 
 # Create models directory
 RUN mkdir -p /models
