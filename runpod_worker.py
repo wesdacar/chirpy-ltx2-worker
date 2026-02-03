@@ -109,10 +109,20 @@ def generate_video_ltx2(job):
         global pipeline, fast_pipeline
         if pipeline is None or fast_pipeline is None:
             initialize_models()
-        
+
+        # Lazy-load models on first LTX2 request + debug
+        global pipeline, fast_pipeline
+        if pipeline is None or fast_pipeline is None:
+            print("🚀 Pipelines missing -> initialize_models()")
+            initialize_models()
+            print(f"✅ After init: pipeline={type(pipeline)}, fast_pipeline={type(fast_pipeline)}")
+
         # Select pipeline based on quality preference
         selected_pipeline = pipeline if quality == 'high' else fast_pipeline
-        
+        print(f"🧠 selected_pipeline={type(selected_pipeline)} quality={quality}")
+        if selected_pipeline is None:
+            raise RuntimeError("selected_pipeline is None even after initialize_models()")
+
         print(f"🎬 Generating {duration}s video: {prompt[:50]}...")
         start_time = time.time()
         
