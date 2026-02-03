@@ -295,42 +295,41 @@ def handler(job):
     print(f"📝 Processing job {job_id}")
 
     try:
-        job_input = job.get("input", {}) or {}
-
-        # If RunPod UI double-wraps input, unwrap one level
-        if isinstance(job_input, dict) and "input" in job_input and isinstance(job_input["input"], dict):
+        # Unwrap input safely (RunPod UI sometimes double-wraps)
+        job_input = job.get("input") or {}
+        if isinstance(job_input, dict) and isinstance(job_input.get("input"), dict):
             job_input = job_input["input"]
 
-mode = (job_input.get("mode", "smoke") or "smoke").lower()
-print(f"🧪 mode={mode}")
+        mode = (job_input.get("mode") or "smoke").lower()
+        print(f"🧭 mode={mode}")
 
-if mode == "ltx2":
-    ensure_models()
+        if mode == "ltx2":
+            # Make sure model weights exist, then lazy-load pipelines if needed
+            ensure_models()
 
-    global pipeline, fast_pipeline
-    if pipeline is None or fast_pipeline is None:
-        print("🚀 Pipelines missing -> initialize_models()")
-        initialize_models()
-        print(
-            f"✅ Pipelines ready: "
-            f"pipeline={type(pipeline)}, fast_pipeline={type(fast_pipeline)}"
-        )
+            global pipeline, fast_pipeline
+            if pipeline is None or fast_pipeline is None:
+                print("🚀 Pipelines missing -> initialize_models()")
+                initialize_models()
+                print(f"✅ Pipelines ready: pipeline={type(pipeline)}, fast_pipeline={type(fast_pipeline)}")
 
-    result = generate_video_ltx2(job)
-else:
-    result = generate_video_smoke(job)
+            result = generate_video_ltx2(job)
+        else:
+            result = generate_video_smoke(job)
 
         print(f"✅ Job {job_id} completed successfully")
+
         if isinstance(result, dict):
             result["worker_version"] = WORKER_VERSION
+
         return result
 
     except Exception as e:
-        print(f"❌ Job {job_id} failed: {str(e)}")
+        print(f"❌ Job {job_id} failed: {e}")
         return {
             "success": False,
             "error": str(e),
-            "job_id": job_id
+            "job_id": job_id,
             "worker_version": WORKER_VERSION
         }
 # Initialize models on worker startup
