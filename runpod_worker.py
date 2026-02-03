@@ -2,236 +2,34 @@
 LTX2 Video Generation RunPod Worker
 Serverless endpoint for Chirpy.me video generation
 """
+
 import os
 import uuid
+import time
 import subprocess
+from typing import Any, Dict, Optional
+
 import boto3
 from botocore.config import Config
 import runpod
 import torch
-import os
-import time
-import requests
-from io import BytesIO
-from pathlib import Path
-import tempfile
-import uuid
-import boto3
-from botocore.exceptions import NoCredentialsError
 
-WORKER_VERSION = "v-importfix-1"
+# ---------------------------
+# Version / boot marker
+# ---------------------------
+WORKER_VERSION = "v-clean-1"
 print(f"✅ Worker booted: {WORKER_VERSION}")
 
-MODELS_DIR = "/models"
-
-LTX2_FILES = [
-    ("ltx-2-19b-distilled-fp8.safetensors",
-     "https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-19b-distilled-fp8.safetensors"),
-    ("ltx-2-spatial-upscaler-x2-1.0.safetensors",
-     "https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-spatial-upscaler-x2-1.0.safetensors"),
-    ("ltx-2-19b-distilled-lora-384.safetensors",
-     "https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-19b-distilled-lora-384.safetensors"),
-]
-
-def ensure_models():
-    os.makedirs(MODELS_DIR, exist_ok=True)
-    for fname, url in LTX2_FILES:
-        path = os.path.join(MODELS_DIR, fname)
-        if not os.path.exists(path):
-            print(f"⬇️ Downloading {fname}...")
-            subprocess.check_call(["wget", "-O", path, url])
-        else:
-            print(f"✅ Already have {fname}")
-
-# Import LTX2 pipeline (will be available after model installation)
-LTX_AVAILABLE = False
-LTX_IMPORT_ERROR = None
-
-try:
-    # Most common if installed as a package
-    from ltx.pipelines import TI2VidTwoStagesPipeline, DistilledPipeline
-    from ltx.core.models import LTXVideoTransformer
-    LTX_AVAILABLE = True
-except Exception as e1:
-    try:
-        # Fallback: older/alt module layout
-        from ltx_pipelines import TI2VidTwoStagesPipeline, DistilledPipeline
-        from ltx_core.models import LTXVideoTransformer
-        LTX_AVAILABLE = True
-    except Exception as e2:
-        LTX_IMPORT_ERROR = f"{type(e2).__name__}: {str(e2)}"
-        print(f"❌ LTX2 import failed: {LTX_IMPORT_ERROR}")
-# Global variables for model loading
-pipeline = None
-fast_pipeline = None
-
-def initialize_models():
-    """Initialize LTX2 models - called once when worker starts"""
-    global pipeline, fast_pipeline
-    
-    if not LTX_AVAILABLE:
-        raise RuntimeError(f"LTX2 packages not available. Import error: {LTX_IMPORT_ERROR}")
-    
-    model_path = os.getenv("MODEL_PATH", "/models")
-    
-    # Load main two-stage pipeline for high quality
-    pipeline = TI2VidTwoStagesPipeline.from_pretrained(
-        model_path,
-        torch_dtype=torch.float16,
-        device_map="auto"
-    )
-    
-    # Load fast pipeline for quick previews
-    fast_pipeline = DistilledPipeline.from_pretrained(
-        model_path,
-        torch_dtype=torch.float16, 
-        device_map="auto"
-    )
-    
-    print("✅ LTX2 models loaded successfully")
-
-def upload_to_s3(video_path, bucket_name, s3_key):
-    """Upload generated video to S3 and return public URL"""
-    try:
-        s3_client = boto3.client(
-            's3',
-            aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
-            region_name=os.getenv('AWS_REGION', 'us-east-1')
-        )
-        
-        # Upload file
-        s3_client.upload_file(
-            video_path, 
-            bucket_name, 
-            s3_key,
-            ExtraArgs={'ContentType': 'video/mp4'}
-        )
-        
-        # Return public URL
-        return f"https://{bucket_name}.s3.amazonaws.com/{s3_key}"
-        
-    except Exception as e:
-        print(f"S3 upload failed: {e}")
-        return None
-
-def generate_video_ltx2(job):
-    """Main video generation handler"""
-    try:
-        # Extract parameters from job input
-        job_input = job.get('input', {}) or {}
-        if isinstance(job_input, dict) and "input" in job_input and isinstance(job_input["input"], dict):
-            job_input = job_input["input"]
-        prompt = job_input.get('prompt', '')
-        
-        if not prompt:
-            return {"error": "No prompt provided"}
-        
-        # Generation parameters
-        duration = job_input.get('duration', 5)  # seconds
-        width = job_input.get('width', 1280)
-        height = job_input.get('height', 720)
-        fps = job_input.get('fps', 24)
-        quality = job_input.get('quality', 'high')  # 'high' or 'fast'
-        
-        # Calculate frames
-        num_frames = duration * fps
-
-        # Lazy-load models on first LTX2 request
-        global pipeline, fast_pipeline
-        if pipeline is None or fast_pipeline is None:
-            initialize_models()
-
-        # Lazy-load models on first LTX2 request + debug
-        global pipeline, fast_pipeline
-        if pipeline is None or fast_pipeline is None:
-            print("🚀 Pipelines missing -> initialize_models()")
-            initialize_models()
-            print(f"✅ After init: pipeline={type(pipeline)}, fast_pipeline={type(fast_pipeline)}")
-
-        # Select pipeline based on quality preference
-        selected_pipeline = pipeline if quality == 'high' else fast_pipeline
-        print(f"🧠 selected_pipeline={type(selected_pipeline)} quality={quality}")
-        if selected_pipeline is None:
-            raise RuntimeError("selected_pipeline is None even after initialize_models()")
-
-        print(f"🎬 Generating {duration}s video: {prompt[:50]}...")
-        start_time = time.time()
-        
-        # Generate video
-        result = selected_pipeline(
-            prompt=prompt,
-            height=height,
-            width=width,
-            num_frames=num_frames,
-            num_inference_steps=40 if quality == 'high' else 8,
-            guidance_scale=7.5,
-            enhance_prompt=True  # Use built-in prompt enhancement
-        )
-        
-        generation_time = time.time() - start_time
-        print(f"⚡ Generated in {generation_time:.2f}s")
-        
-        # Save video to temporary file
-        video_id = str(uuid.uuid4())
-        temp_path = f"/tmp/video_{video_id}.mp4"
-        
-        # Save the video (result contains video tensor)
-        # Note: Actual saving method depends on LTX2 output format
-        # This is a placeholder - check LTX2 docs for correct method
-        if hasattr(result, 'save'):
-            result.save(temp_path)
-        else:
-            # Convert tensor to video file
-            # Implementation depends on LTX2 output format
-            torch.save(result, temp_path)
-        
-        # Upload to S3 if configured
-        video_url = None
-        bucket_name = os.getenv('S3_BUCKET_NAME')
-        
-        if bucket_name:
-            s3_key = f"generated/{video_id}.mp4"
-            video_url = upload_to_s3(temp_path, bucket_name, s3_key)
-        
-        # Clean up temp file
-        if os.path.exists(temp_path):
-            os.unlink(temp_path)
-        
-        # Return result
-        return {
-            "success": True,
-            "video_url": video_url,
-            "video_id": video_id,
-            "generation_time": generation_time,
-            "parameters": {
-                "prompt": prompt,
-                "duration": duration,
-                "width": width, 
-                "height": height,
-                "fps": fps,
-                "quality": quality
-            },
-            "metadata": {
-                "model": "LTX2",
-                "inference_steps": 40 if quality == 'high' else 8,
-                "frames_generated": num_frames
-            }
-        }
-        
-    except Exception as e:
-        print(f"❌ Generation failed: {str(e)}")
-        return {
-            "success": False,
-            "error": str(e),
-            "error_type": type(e).__name__
-        }
+# ---------------------------
+# R2 (S3-compatible) upload
+# Required env vars:
+#   R2_ENDPOINT
+#   R2_ACCESS_KEY_ID
+#   R2_SECRET_ACCESS_KEY
+#   R2_BUCKET
+# ---------------------------
 
 def upload_file_to_r2(local_path: str, content_type: str = "video/mp4") -> str:
-    """
-    Uploads a file to Cloudflare R2 (S3-compatible) and returns a presigned URL.
-    (You said no public base URL yet, so presigned is perfect.)
-    """
     endpoint = os.environ["R2_ENDPOINT"]
     access_key = os.environ["R2_ACCESS_KEY_ID"]
     secret_key = os.environ["R2_SECRET_ACCESS_KEY"]
@@ -261,11 +59,15 @@ def upload_file_to_r2(local_path: str, content_type: str = "video/mp4") -> str:
         ExpiresIn=60 * 60,  # 1 hour
     )
 
-def generate_video_smoke(job):
-    prompt = (job.get("input") or {}).get("prompt", "Hello")
+# ---------------------------
+# Smoke mode (fast sanity test)
+# ---------------------------
+
+def generate_video_smoke(job_input: Dict[str, Any]) -> Dict[str, Any]:
+    prompt = job_input.get("prompt", "Hello")
     out_mp4 = "/tmp/ltx2_smoke_test.mp4"
 
-    # Create a tiny 1-second MP4 (black screen) so we can test R2 upload fast.
+    # Create a tiny 1-second MP4 (black screen) so we can test upload fast.
     subprocess.run(
         [
             "ffmpeg", "-y",
@@ -273,7 +75,7 @@ def generate_video_smoke(job):
             "-i", "color=c=black:s=1280x720:r=24",
             "-t", "1",
             "-pix_fmt", "yuv420p",
-            out_mp4
+            out_mp4,
         ],
         check=True,
         stdout=subprocess.DEVNULL,
@@ -284,34 +86,174 @@ def generate_video_smoke(job):
 
     return {
         "success": True,
+        "mode": "smoke",
         "message": "R2 upload smoke test succeeded",
         "echo": prompt,
-        "video_url": video_url
+        "video_url": video_url,
+        "worker_version": WORKER_VERSION,
     }
 
-def handler(job):
+# ---------------------------
+# LTX2 model files (download at runtime)
+# ---------------------------
+
+MODELS_DIR = os.getenv("MODEL_PATH", "/models")
+
+LTX2_FILES = [
+    ("ltx-2-19b-distilled-fp8.safetensors",
+     "https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-19b-distilled-fp8.safetensors"),
+    ("ltx-2-spatial-upscaler-x2-1.0.safetensors",
+     "https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-spatial-upscaler-x2-1.0.safetensors"),
+    ("ltx-2-19b-distilled-lora-384.safetensors",
+     "https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-19b-distilled-lora-384.safetensors"),
+]
+
+def ensure_models() -> None:
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    for fname, url in LTX2_FILES:
+        path = os.path.join(MODELS_DIR, fname)
+        if not os.path.exists(path):
+            print(f"⬇️ Downloading {fname}...")
+            subprocess.check_call(["wget", "-O", path, url])
+            print(f"✅ Downloaded {fname}")
+        else:
+            print(f"✅ Already have {fname}")
+
+# ---------------------------
+# LTX2 imports + pipelines (lazy load)
+# ---------------------------
+
+LTX_AVAILABLE = False
+LTX_IMPORT_ERROR: Optional[str] = None
+
+try:
+    from ltx.pipelines import TI2VidTwoStagesPipeline, DistilledPipeline  # type: ignore
+    LTX_AVAILABLE = True
+except Exception as e1:
+    try:
+        from ltx_pipelines import TI2VidTwoStagesPipeline, DistilledPipeline  # type: ignore
+        LTX_AVAILABLE = True
+    except Exception as e2:
+        LTX_IMPORT_ERROR = f"{type(e2).__name__}: {str(e2)}"
+        print(f"❌ LTX2 import failed: {LTX_IMPORT_ERROR}")
+
+pipeline = None
+fast_pipeline = None
+
+def initialize_models() -> None:
+    global pipeline, fast_pipeline
+
+    if not LTX_AVAILABLE:
+        raise RuntimeError(f"LTX2 packages not available. Import error: {LTX_IMPORT_ERROR}")
+
+    # IMPORTANT:
+    # This assumes the pipelines can load from MODEL_PATH and find weights.
+    # If LTX2 expects a different layout, we'll adjust after first successful import.
+    print("🧠 Initializing LTX2 pipelines...")
+    pipeline = TI2VidTwoStagesPipeline.from_pretrained(
+        MODELS_DIR,
+        torch_dtype=torch.float16,
+        device_map="auto",
+    )
+    fast_pipeline = DistilledPipeline.from_pretrained(
+        MODELS_DIR,
+        torch_dtype=torch.float16,
+        device_map="auto",
+    )
+    print("✅ LTX2 pipelines loaded")
+
+# ---------------------------
+# LTX2 mode (placeholder until we wire real MP4 encoding)
+# ---------------------------
+
+def generate_video_ltx2(job_input: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    This function is intentionally conservative right now.
+
+    Your previous code attempted:
+      - calling the pipeline
+      - then torch.save(result) into .mp4
+
+    That will never produce a playable MP4.
+    First we must confirm:
+      1) models download
+      2) pipelines import and load
+      3) pipeline call returns a tensor/frames we can encode with ffmpeg/av
+
+    So for now:
+      - we download models
+      - load pipelines
+      - return a clear "ready to wire generation" response
+    """
+
+    global pipeline, fast_pipeline
+
+    prompt = job_input.get("prompt", "").strip()
+    if not prompt:
+        return {
+            "success": False,
+            "mode": "ltx2",
+            "error": "No prompt provided",
+            "worker_version": WORKER_VERSION,
+        }
+
+    ensure_models()
+
+    if pipeline is None or fast_pipeline is None:
+        initialize_models()
+
+    quality = (job_input.get("quality", "fast") or "fast").lower()
+    selected = fast_pipeline if quality != "high" else pipeline
+
+    return {
+        "success": True,
+        "mode": "ltx2",
+        "message": "LTX2 pipelines loaded successfully. Next step is wiring actual generation + MP4 encoding.",
+        "prompt": prompt,
+        "quality": quality,
+        "selected_pipeline": str(type(selected)),
+        "models_dir": MODELS_DIR,
+        "worker_version": WORKER_VERSION,
+    }
+
+# ---------------------------
+# RunPod handler
+# ---------------------------
+
+def unwrap_input(job: Dict[str, Any]) -> Dict[str, Any]:
+    job_input = job.get("input") or {}
+    if isinstance(job_input, dict) and isinstance(job_input.get("input"), dict):
+        job_input = job_input["input"]
+    return job_input
+
+def handler(job: Dict[str, Any]) -> Dict[str, Any]:
     job_id = job.get("id", "unknown")
-    print(f"📝 Processing job {job_id}")
+    print(f"📦 Processing job {job_id}")
 
     try:
-        job_input = job.get("input") or {}
-
-        # If RunPod UI double-wraps input, unwrap one level
-        if isinstance(job_input, dict) and isinstance(job_input.get("input"), dict):
-            job_input = job_input["input"]
-
+        job_input = unwrap_input(job)
         mode = (job_input.get("mode", "smoke") or "smoke").lower()
         print(f"🧭 mode={mode}")
 
         if mode == "ltx2":
-            return generate_video_ltx2(job)
+            result = generate_video_ltx2(job_input)
         else:
-            return generate_video_smoke(job)
+            result = generate_video_smoke(job_input)
+
+        # Ensure version present
+        if isinstance(result, dict) and "worker_version" not in result:
+            result["worker_version"] = WORKER_VERSION
+
+        return result
 
     except Exception as e:
         print(f"❌ Job {job_id} failed: {e}")
-        return {"success": False, "job_id": job_id, "error": str(e), "error_type": type(e).__name__}
-        
-# Initialize models on worker startup
-print("🚀 Starting RunPod serverless worker (no startup model load)")
+        return {
+            "success": False,
+            "error": str(e),
+            "job_id": job_id,
+            "worker_version": WORKER_VERSION,
+        }
+
+print("🚀 Starting RunPod serverless worker")
 runpod.serverless.start({"handler": handler})
