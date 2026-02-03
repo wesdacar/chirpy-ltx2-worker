@@ -37,6 +37,8 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/chirpy-ltx2-worker:0.5
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/chirpy-ltx2-worker:0.5
+            ${{ secrets.DOCKERHUB_USERNAME }}/chirpy-ltx2-worker:run-${{ github.run_number }}
           cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/chirpy-ltx2-worker:buildcache
           cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/chirpy-ltx2-worker:buildcache,mode=max
