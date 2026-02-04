@@ -229,6 +229,19 @@ except Exception as e:
 pipeline_hq = None
 pipeline_fast = None
 
+def initialize_models() -> None:
+    print("🧠 Initializing LTX2 ... (DEBUG SIGNATURE MODE)")
+    import inspect
+    print("=== LTX2 DEBUG START ===")
+    print("TI2VidTwoStagesPipeline:", TI2VidTwoStagesPipeline)
+    print("DistilledPipeline:", DistilledPipeline)
+    print("TI2VidTwoStagesPipeline signature:", inspect.signature(TI2VidTwoStagesPipeline))
+    print("TI2VidTwoStagesPipeline.__init__:", inspect.signature(TI2VidTwoStagesPipeline.__init__))
+    print("DistilledPipeline signature:", inspect.signature(DistilledPipeline))
+    print("DistilledPipeline.__init__:", inspect.signature(DistilledPipeline.__init__))
+    print("=== LTX2 DEBUG END ===")
+    raise RuntimeError("DEBUG ONLY: printed pipeline constructor signatures")
+
 def initialize_pipelines() -> None:
     """
     Your current runtime errors show these are REQUIRED:
@@ -372,13 +385,14 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         print(f"🧭 mode={mode}")
 
         if mode == "ltx2":
+            initialize_models()  # TEMP DEBUG: prints pipeline signatures then stops
             return generate_video_ltx2(job_input)
+
         return generate_video_smoke(job_input)
 
     except Exception as e:
         print(f"❌ Job {job_id} failed: {e}")
         return {"success": False, "job_id": job_id, "error": str(e), "worker_version": WORKER_VERSION}
-
 
 if __name__ == "__main__":
     print("🚀 Starting RunPod serverless worker")
