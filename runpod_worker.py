@@ -4,7 +4,7 @@ Serverless endpoint for Chirpy.me video generation
 
 Modes:
 - smoke: generate a 1s black MP4 and upload to R2 (fast health check)
-- ltx2: load LTX-2 pipelines and generate video, then upload to R2
+- ltx2: download LTX-2 weights (if missing), init pipelines, generate video, upload to R2
 
 Required env vars for R2:
 - R2_ENDPOINT
@@ -12,10 +12,13 @@ Required env vars for R2:
 - R2_SECRET_ACCESS_KEY
 - R2_BUCKET
 
-Recommended env vars on RunPod (OPTIONAL if auto-detect works):
+Recommended env vars on RunPod (good defaults if you set them):
 - MODEL_PATH=/runpod-volume/models
 - TMP_DIR=/runpod-volume/tmp
 - TMPDIR=/runpod-volume/tmp
+
+Optional (ONLY if you want HQ pipeline later):
+- GEMMA_ROOT=/runpod-volume/gemma   (must exist + contain Gemma files)
 """
 
 import os
@@ -23,23 +26,30 @@ import uuid
 import time
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List, Tuple
 
 import boto3
 from botocore.config import Config
 import runpod
 
-# ------------------------------------------------------------
-# Disk auto-detect (prevents /app/tmp and missing /workspace)
-# ------------------------------------------------------------
 
+# -----------------------
+# Version
+# -----------------------
+WORKER_VERSION = "v-ltx2-clean-full-1"
+print(f"✅ Worker booted: {WORKER_VERSION}")
+
+
+# -----------------------
+# Disk / tmp selection
+# -----------------------
 def pick_writable_base() -> str:
     """
-    Try common RunPod mount points (serverless/pods differ).
-    Returns the first path we can mkdir + write a small temp file into.
+    Finds a writable base path with space.
+    Priority: RunPod volume mounts first.
     """
     candidates = [
-        os.getenv("RUNPOD_VOLUME_PATH", ""),
+        os.getenv("RUNPOD_VOLUME_PATH", "").strip(),
         "/runpod-volume",
         "/workspace",
         "/volume",
@@ -47,19 +57,18 @@ def pick_writable_base() -> str:
         "/mnt",
         "/tmp",
     ]
-
     for base in candidates:
         if not base:
             continue
         try:
-            Path(base).mkdir(parents=True, exist_ok=True)
-            test = Path(base) / ".write_test"
+            p = Path(base)
+            p.mkdir(parents=True, exist_ok=True)
+            test = p / ".write_test"
             test.write_text("ok")
             test.unlink()
-            return base
+            return str(p)
         except Exception:
             continue
-
     return "/tmp"
 
 
@@ -71,18 +80,15 @@ TMP_DIR = os.getenv("TMP_DIR", str(Path(BASE) / "tmp"))
 Path(MODEL_PATH).mkdir(parents=True, exist_ok=True)
 Path(TMP_DIR).mkdir(parents=True, exist_ok=True)
 
-# Force Python + libs to use big disk temp instead of /app/tmp
+# Force Python/tempfile/libs to use big disk, not /app/tmp
 os.environ["TMPDIR"] = TMP_DIR
 os.environ["TEMP"] = TMP_DIR
 os.environ["TMP"] = TMP_DIR
 
-# -----------------------
-# Version + basic config
-# -----------------------
-WORKER_VERSION = "v-ltx2-full-4"
-print(f"✅ Worker booted: {WORKER_VERSION}")
-print(f"🗂️ Using MODEL_PATH={MODEL_PATH}")
-print(f"🗂️ Using TMP_DIR={TMP_DIR}")
+print(f"📁 BASE={BASE}")
+print(f"📁 MODEL_PATH={MODEL_PATH}")
+print(f"📁 TMP_DIR={TMP_DIR}")
+
 
 # -----------------------
 # R2 upload helper
@@ -119,11 +125,12 @@ def upload_file_to_r2(local_path: str, content_type: str = "video/mp4") -> str:
     return s3.generate_presigned_url(
         "get_object",
         Params={"Bucket": bucket, "Key": key},
-        ExpiresIn=60 * 60,  # 1 hour
+        ExpiresIn=60 * 60,
     )
 
+
 # -----------------------
-# Smoke test (fast)
+# Smoke test
 # -----------------------
 def generate_video_smoke(job_input: Dict[str, Any]) -> Dict[str, Any]:
     prompt = job_input.get("prompt", "Hello")
@@ -152,12 +159,14 @@ def generate_video_smoke(job_input: Dict[str, Any]) -> Dict[str, Any]:
         "echo": prompt,
         "video_url": video_url,
         "worker_version": WORKER_VERSION,
+        "paths": {"model_path": MODEL_PATH, "tmp_dir": TMP_DIR},
     }
 
+
 # -----------------------
-# LTX-2 model files
+# LTX-2 weights
 # -----------------------
-LTX2_FILES = [
+LTX2_FILES: List[Tuple[str, str]] = [
     (
         "ltx-2-19b-distilled-fp8.safetensors",
         "https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-19b-distilled-fp8.safetensors",
@@ -172,24 +181,21 @@ LTX2_FILES = [
     ),
 ]
 
+
 def ensure_models() -> None:
-    """
-    Downloads required LTX-2 weights into MODEL_PATH if missing.
-    Uses wget -c to resume partial downloads.
-    """
     Path(MODEL_PATH).mkdir(parents=True, exist_ok=True)
 
     for fname, url in LTX2_FILES:
         dst = Path(MODEL_PATH) / fname
-        dst.parent.mkdir(parents=True, exist_ok=True)
 
         if dst.exists() and dst.stat().st_size > 0:
-            print(f"✅ Already have {fname}")
+            print(f"✅ Already have {fname} ({dst.stat().st_size} bytes)")
             continue
 
         print(f"⬇️ Downloading {fname} -> {dst}")
         subprocess.check_call(["wget", "-c", "-O", str(dst), url])
         print(f"✅ Downloaded {fname}")
+
 
 # -----------------------
 # Import LTX pipelines
@@ -201,9 +207,9 @@ TI2VidTwoStagesPipeline = None
 DistilledPipeline = None
 
 try:
-    # your docker build installs ltx-pipelines => module is ltx_pipelines
-    from ltx_pipelines import TI2VidTwoStagesPipeline as _TI2  # type: ignore
-    from ltx_pipelines import DistilledPipeline as _DP  # type: ignore
+    # Your container installs ltx-pipelines and imports as ltx_pipelines
+    from ltx_pipelines import TI2VidTwoStagesPipeline as _TI2
+    from ltx_pipelines import DistilledPipeline as _DP
 
     TI2VidTwoStagesPipeline = _TI2
     DistilledPipeline = _DP
@@ -213,94 +219,85 @@ except Exception as e:
     LTX_IMPORT_ERROR = f"{type(e).__name__}: {e}"
     print(f"❌ LTX import failed: {LTX_IMPORT_ERROR}")
 
+
 # -----------------------
-# Pipelines (lazy loaded)
+# Pipelines (lazy)
 # -----------------------
 pipeline_hq = None
 pipeline_fast = None
 
+
 def initialize_models() -> None:
     """
-    Initialize LTX-2 pipelines once.
-
-    Different LTX2 builds expose different constructor signatures, so we try a
-    few compatible patterns until one works.
+    Initializes FAST pipeline first (no Gemma requirement).
+    HQ pipeline is optional and only loads if GEMMA_ROOT exists.
     """
     global pipeline_hq, pipeline_fast
 
     if not LTX_AVAILABLE:
         raise RuntimeError(f"LTX2 packages not available. Import error: {LTX_IMPORT_ERROR}")
 
-    if pipeline_hq is not None and pipeline_fast is not None:
+    if pipeline_fast is not None or pipeline_hq is not None:
+        # If any exists, we don't force reload; that's enough to proceed.
         return
 
     print("🧠 Initializing LTX2 pipelines... (constructor API)")
     ensure_models()
 
     fp8_path = str(Path(MODEL_PATH) / "ltx-2-19b-distilled-fp8.safetensors")
-    upscaler_path = str(Path(MODEL_PATH) / "ltx-2-spatial-upscaler-x2-1.0.safetensors")
-    lora_path = str(Path(MODEL_PATH) / "ltx-2-19b-distilled-lora-384.safetensors")
+    upsampler_path = str(Path(MODEL_PATH) / "ltx-2-spatial-upscaler-x2-1.0.safetensors")
+    distilled_lora_path = str(Path(MODEL_PATH) / "ltx-2-19b-distilled-lora-384.safetensors")
 
-    # ---- HQ pipeline: try multiple signatures
-    last_err = None
-    attempts = [
-        ("kw_spatial_upscaler",
-         lambda: TI2VidTwoStagesPipeline(fp8_path, spatial_upscaler=upscaler_path, distilled_lora=lora_path)),
-        ("kw_upscaler",
-         lambda: TI2VidTwoStagesPipeline(fp8_path, upscaler=upscaler_path, distilled_lora=lora_path)),
-        ("positional_3",
-         lambda: TI2VidTwoStagesPipeline(fp8_path, upscaler_path, lora_path)),
-        ("positional_2_plus_kw_lora",
-         lambda: TI2VidTwoStagesPipeline(fp8_path, upscaler_path, distilled_lora=lora_path)),
-        ("positional_2",
-         lambda: TI2VidTwoStagesPipeline(fp8_path, upscaler_path)),
-        ("fp8_only_plus_kw",
-         lambda: TI2VidTwoStagesPipeline(fp8_path, distilled_lora=lora_path)),
-        ("fp8_only",
-         lambda: TI2VidTwoStagesPipeline(fp8_path)),
-    ]
+    # ---- FAST pipeline (try a few constructor shapes)
+    print("⚡ Initializing FAST pipeline...")
+    fast_attempts: List[str] = []
 
-    for name, fn in attempts:
+    for label, pos_args, kw_args in [
+        ("pos_fp8", [fp8_path], {}),
+        ("pos_fp8_lora", [fp8_path, distilled_lora_path], {}),
+        ("pos_fp8_lora_upsampler", [fp8_path, distilled_lora_path, upsampler_path], {}),
+    ]:
         try:
-            pipeline_hq = fn()
-            print(f"✅ HQ pipeline init OK via: {name}")
+            pipeline_fast = DistilledPipeline(*pos_args, **kw_args)  # type: ignore
+            print(f"✅ FAST pipeline ready via {label}: {type(pipeline_fast)}")
             break
         except Exception as e:
-            last_err = e
-            print(f"⚠️ HQ pipeline init failed via {name}: {type(e).__name__}: {e}")
-
-    if pipeline_hq is None:
-        raise RuntimeError(f"Failed to init HQ pipeline. Last error: {type(last_err).__name__}: {last_err}")
-
-    # ---- Fast pipeline: also try multiple signatures
-    last_err = None
-    fast_attempts = [
-        ("kw_lora",
-         lambda: DistilledPipeline(fp8_path, distilled_lora=lora_path)),
-        ("positional_2",
-         lambda: DistilledPipeline(fp8_path, lora_path)),
-        ("fp8_only",
-         lambda: DistilledPipeline(fp8_path)),
-    ]
-
-    for name, fn in fast_attempts:
-        try:
-            pipeline_fast = fn()
-            print(f"✅ Fast pipeline init OK via: {name}")
-            break
-        except Exception as e:
-            last_err = e
-            print(f"⚠️ Fast pipeline init failed via {name}: {type(e).__name__}: {e}")
+            fast_attempts.append(f"{label}: {type(e).__name__}: {e}")
+            pipeline_fast = None
 
     if pipeline_fast is None:
-        raise RuntimeError(f"Failed to init fast pipeline. Last error: {type(last_err).__name__}: {last_err}")
+        raise RuntimeError("Failed to init FAST pipeline. Attempts:\n" + "\n".join(fast_attempts))
 
-    print(f"✅ Pipelines loaded: hq={type(pipeline_hq)} fast={type(pipeline_fast)}")
+    # ---- HQ pipeline optional (needs Gemma + loras signature)
+    gemma_root = (os.getenv("GEMMA_ROOT") or "").strip()
+    if not gemma_root:
+        print("ℹ️ GEMMA_ROOT not set. Skipping HQ pipeline init (FAST will work).")
+        return
+
+    if not Path(gemma_root).exists():
+        print(f"ℹ️ GEMMA_ROOT does not exist: {gemma_root}. Skipping HQ pipeline init.")
+        return
+
+    print(f"🎯 Initializing HQ pipeline using GEMMA_ROOT={gemma_root}")
+    try:
+        # Your logs indicated required args:
+        # (fp8_path, distilled_lora, spatial_upsampler_path, gemma_root, loras)
+        pipeline_hq = TI2VidTwoStagesPipeline(  # type: ignore
+            fp8_path,
+            distilled_lora_path,
+            upsampler_path,
+            gemma_root,
+            [],  # loras list
+        )
+        print(f"✅ HQ pipeline ready: {type(pipeline_hq)}")
+    except Exception as e:
+        print(f"⚠️ HQ pipeline init failed: {type(e).__name__}: {e}")
+        pipeline_hq = None
+
 
 def _save_pipeline_output_to_mp4(result: Any) -> str:
     """
-    Best-effort saver for whatever the pipeline returns.
-    Returns path to MP4 in TMP_DIR.
+    Best-effort saver. We will adjust once we see real output type.
     """
     out_mp4 = str(Path(TMP_DIR) / f"ltx2_{uuid.uuid4().hex}.mp4")
 
@@ -319,36 +316,48 @@ def _save_pipeline_output_to_mp4(result: Any) -> str:
         if Path(out_mp4).exists():
             return out_mp4
 
-    raise RuntimeError(f"Unknown pipeline output type: {type(result)} (no path/video_path/save)")
+    raise RuntimeError(f"Unknown pipeline output type: {type(result)} (no save/video_path/path/mp4)")
+
 
 def generate_video_ltx2(job_input: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Text-to-video.
+    For now, we default to FAST because HQ requires Gemma.
+    If you later add GEMMA_ROOT, you can request quality=high.
+    """
     global pipeline_hq, pipeline_fast
 
     prompt = (job_input.get("prompt") or "").strip()
     if not prompt:
         return {"success": False, "error": "No prompt provided", "worker_version": WORKER_VERSION}
 
-    duration = int(job_input.get("duration", 5))
-    fps = int(job_input.get("fps", 24))
-    width = int(job_input.get("width", 1280))
-    height = int(job_input.get("height", 720))
-    quality = (job_input.get("quality", "high") or "high").lower()
+    duration = int(job_input.get("duration", 2))
+    fps = int(job_input.get("fps", 16))
+    width = int(job_input.get("width", 768))
+    height = int(job_input.get("height", 432))
+    quality = (job_input.get("quality", "fast") or "fast").lower()
 
     num_frames = duration * fps
-    steps = int(job_input.get("steps", 40 if quality == "high" else 8))
+    steps = int(job_input.get("steps", 8 if quality != "high" else 30))
     guidance_scale = float(job_input.get("guidance_scale", 7.5))
     enhance_prompt = bool(job_input.get("enhance_prompt", True))
 
-    if pipeline_hq is None or pipeline_fast is None:
-        initialize_models()
+    # Ensure weights exist + pipelines loaded
+    initialize_models()
 
-    selected = pipeline_hq if quality == "high" else pipeline_fast
+    # HQ only if present; otherwise fall back to fast
+    selected = pipeline_hq if (quality == "high" and pipeline_hq is not None) else pipeline_fast
     if selected is None:
-        raise RuntimeError("Selected pipeline is None after initialize_models()")
+        raise RuntimeError("No pipeline available after initialize_models()")
 
-    print(f"🎬 LTX2 generating: {duration}s {width}x{height} fps={fps} frames={num_frames} steps={steps} quality={quality}")
+    print(
+        f"🎬 LTX2 generating: {duration}s {width}x{height} fps={fps} frames={num_frames} "
+        f"steps={steps} quality={quality} pipeline={type(selected)}"
+    )
+
     start = time.time()
 
+    # Pipeline call signature might differ; we pass common kwargs.
     result = selected(  # type: ignore
         prompt=prompt,
         height=height,
@@ -383,18 +392,23 @@ def generate_video_ltx2(job_input: Dict[str, Any]) -> Dict[str, Any]:
             "guidance_scale": guidance_scale,
             "enhance_prompt": enhance_prompt,
         },
+        "paths": {"model_path": MODEL_PATH, "tmp_dir": TMP_DIR},
     }
+
 
 # -----------------------
 # RunPod handler
 # -----------------------
 def handler(job: Dict[str, Any]) -> Dict[str, Any]:
+    # RunPod sometimes calls with malformed job - guard it
+    if not isinstance(job, dict) or "input" not in job:
+        return {"success": False, "error": "Job has missing field(s): id or input.", "worker_version": WORKER_VERSION}
+
     job_id = job.get("id", "unknown")
     print(f"📦 Processing job {job_id}")
 
     try:
         job_input = job.get("input") or {}
-        # UI sometimes double-wraps
         if isinstance(job_input, dict) and "input" in job_input and isinstance(job_input["input"], dict):
             job_input = job_input["input"]
 
@@ -402,9 +416,13 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         print(f"🧭 mode={mode}")
 
         if mode == "ltx2":
-            return generate_video_ltx2(job_input)
+            result = generate_video_ltx2(job_input)
         else:
-            return generate_video_smoke(job_input)
+            result = generate_video_smoke(job_input)
+
+        if isinstance(result, dict):
+            result["worker_version"] = WORKER_VERSION
+        return result
 
     except Exception as e:
         print(f"❌ Job {job_id} failed: {e}")
@@ -415,9 +433,8 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             "worker_version": WORKER_VERSION,
         }
 
-# IMPORTANT:
-# Only start serverless when run as main.
-# This prevents Dockerfile "import runpod_worker" checks from starting worker.
+
+# IMPORTANT: only start when run as main (prevents Dockerfile import sanity checks from launching serverless)
 if __name__ == "__main__":
     print("🚀 Starting RunPod serverless worker")
     runpod.serverless.start({"handler": handler})
