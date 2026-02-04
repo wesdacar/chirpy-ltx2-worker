@@ -12,9 +12,10 @@ Required env vars for R2:
 - R2_SECRET_ACCESS_KEY
 - R2_BUCKET
 
-Recommended env vars on RunPod:
-- MODEL_PATH=/workspace/models
-- TMP_DIR=/workspace/tmp
+Recommended env vars on RunPod (OPTIONAL if auto-detect works):
+- MODEL_PATH=/runpod-volume/models
+- TMP_DIR=/runpod-volume/tmp
+- TMPDIR=/runpod-volume/tmp
 """
 
 import os
@@ -28,27 +29,65 @@ import boto3
 from botocore.config import Config
 import runpod
 
+# ------------------------------------------------------------
+# Disk auto-detect (prevents /app/tmp and missing /workspace)
+# ------------------------------------------------------------
+
+def pick_writable_base() -> str:
+    """
+    Try common RunPod mount points (serverless/pods differ).
+    Returns the first path we can mkdir + write a small temp file into.
+    """
+    candidates = [
+        os.getenv("RUNPOD_VOLUME_PATH", ""),
+        "/runpod-volume",
+        "/workspace",
+        "/volume",
+        "/data",
+        "/mnt",
+        "/tmp",
+    ]
+
+    for base in candidates:
+        if not base:
+            continue
+        try:
+            Path(base).mkdir(parents=True, exist_ok=True)
+            test = Path(base) / ".write_test"
+            test.write_text("ok")
+            test.unlink()
+            return base
+        except Exception:
+            continue
+
+    return "/tmp"
+
+
+BASE = pick_writable_base()
+
+MODEL_PATH = os.getenv("MODEL_PATH", str(Path(BASE) / "models"))
+TMP_DIR = os.getenv("TMP_DIR", str(Path(BASE) / "tmp"))
+
+Path(MODEL_PATH).mkdir(parents=True, exist_ok=True)
+Path(TMP_DIR).mkdir(parents=True, exist_ok=True)
+
+# Force Python + libs to use big disk temp instead of /app/tmp
+os.environ["TMPDIR"] = TMP_DIR
+os.environ["TEMP"] = TMP_DIR
+os.environ["TMP"] = TMP_DIR
 
 # -----------------------
 # Version + basic config
 # -----------------------
 WORKER_VERSION = "v-ltx2-full-4"
 print(f"✅ Worker booted: {WORKER_VERSION}")
-
-MODEL_PATH = os.getenv("MODEL_PATH", "/workspace/models")
-TMP_DIR = os.getenv("TMP_DIR", "/workspace/tmp")
-
-Path(MODEL_PATH).mkdir(parents=True, exist_ok=True)
-Path(TMP_DIR).mkdir(parents=True, exist_ok=True)
-
+print(f"🗂️ Using MODEL_PATH={MODEL_PATH}")
+print(f"🗂️ Using TMP_DIR={TMP_DIR}")
 
 # -----------------------
 # R2 upload helper
 # -----------------------
 def upload_file_to_r2(local_path: str, content_type: str = "video/mp4") -> str:
-    """
-    Uploads a file to Cloudflare R2 (S3-compatible) and returns a presigned URL.
-    """
     required = ["R2_ENDPOINT", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"]
     missing = [k for k in required if not os.getenv(k)]
     if missing:
@@ -83,7 +122,6 @@ def upload_file_to_r2(local_path: str, content_type: str = "video/mp4") -> str:
         ExpiresIn=60 * 60,  # 1 hour
     )
 
-
 # -----------------------
 # Smoke test (fast)
 # -----------------------
@@ -91,7 +129,6 @@ def generate_video_smoke(job_input: Dict[str, Any]) -> Dict[str, Any]:
     prompt = job_input.get("prompt", "Hello")
     out_mp4 = str(Path(TMP_DIR) / f"ltx2_smoke_{uuid.uuid4().hex}.mp4")
 
-    # Create a tiny 1-second MP4 (black screen)
     subprocess.run(
         [
             "ffmpeg", "-y",
@@ -117,7 +154,6 @@ def generate_video_smoke(job_input: Dict[str, Any]) -> Dict[str, Any]:
         "worker_version": WORKER_VERSION,
     }
 
-
 # -----------------------
 # LTX-2 model files
 # -----------------------
@@ -136,7 +172,6 @@ LTX2_FILES = [
     ),
 ]
 
-
 def ensure_models() -> None:
     """
     Downloads required LTX-2 weights into MODEL_PATH if missing.
@@ -146,8 +181,8 @@ def ensure_models() -> None:
 
     for fname, url in LTX2_FILES:
         dst = Path(MODEL_PATH) / fname
+        dst.parent.mkdir(parents=True, exist_ok=True)
 
-        # If file exists and is non-empty, keep it
         if dst.exists() and dst.stat().st_size > 0:
             print(f"✅ Already have {fname}")
             continue
@@ -155,7 +190,6 @@ def ensure_models() -> None:
         print(f"⬇️ Downloading {fname} -> {dst}")
         subprocess.check_call(["wget", "-c", "-O", str(dst), url])
         print(f"✅ Downloaded {fname}")
-
 
 # -----------------------
 # Import LTX pipelines
@@ -167,9 +201,9 @@ TI2VidTwoStagesPipeline = None
 DistilledPipeline = None
 
 try:
-    # Your build installs /tmp/ltx2/packages/ltx-pipelines → module is ltx_pipelines
-    from ltx_pipelines import TI2VidTwoStagesPipeline as _TI2
-    from ltx_pipelines import DistilledPipeline as _DP
+    # your docker build installs ltx-pipelines => module is ltx_pipelines
+    from ltx_pipelines import TI2VidTwoStagesPipeline as _TI2  # type: ignore
+    from ltx_pipelines import DistilledPipeline as _DP  # type: ignore
 
     TI2VidTwoStagesPipeline = _TI2
     DistilledPipeline = _DP
@@ -179,21 +213,18 @@ except Exception as e:
     LTX_IMPORT_ERROR = f"{type(e).__name__}: {e}"
     print(f"❌ LTX import failed: {LTX_IMPORT_ERROR}")
 
-
 # -----------------------
 # Pipelines (lazy loaded)
 # -----------------------
 pipeline_hq = None
 pipeline_fast = None
 
-
 def initialize_models() -> None:
     """
     Initialize LTX-2 pipelines once.
 
-    Your current installed LTX pipeline uses a constructor API.
-    The HQ pipeline requires `distilled_lora` -> fixes:
-      TI2VidTwoStagesPipeline.__init__() missing ... 'distilled_lora'
+    Your installed LTX pipeline uses a constructor API.
+    HQ pipeline requires `distilled_lora`.
     """
     global pipeline_hq, pipeline_fast
 
@@ -204,14 +235,13 @@ def initialize_models() -> None:
         return
 
     print("🧠 Initializing LTX2 pipelines... (constructor API)")
-
     ensure_models()
 
     fp8_path = str(Path(MODEL_PATH) / "ltx-2-19b-distilled-fp8.safetensors")
     upscaler_path = str(Path(MODEL_PATH) / "ltx-2-spatial-upscaler-x2-1.0.safetensors")
     lora_path = str(Path(MODEL_PATH) / "ltx-2-19b-distilled-lora-384.safetensors")
 
-    # HQ pipeline (two-stage): required distilled_lora
+    # HQ pipeline (two-stage): requires distilled_lora
     try:
         pipeline_hq = TI2VidTwoStagesPipeline(  # type: ignore
             fp8_path,
@@ -219,7 +249,7 @@ def initialize_models() -> None:
             distilled_lora=lora_path,
         )
     except TypeError:
-        # Some builds rename args
+        # some versions rename args
         pipeline_hq = TI2VidTwoStagesPipeline(  # type: ignore
             fp8_path,
             upscaler=upscaler_path,
@@ -237,18 +267,13 @@ def initialize_models() -> None:
 
     print(f"✅ Pipelines loaded: hq={type(pipeline_hq)} fast={type(pipeline_fast)}")
 
-
 def _save_pipeline_output_to_mp4(result: Any) -> str:
     """
     Best-effort saver for whatever the pipeline returns.
     Returns path to MP4 in TMP_DIR.
-
-    If we can't figure out the output, we raise a clear error and will adjust
-    based on the real result type you see in logs.
     """
     out_mp4 = str(Path(TMP_DIR) / f"ltx2_{uuid.uuid4().hex}.mp4")
 
-    # Common cases
     if isinstance(result, str) and Path(result).exists():
         Path(result).rename(out_mp4)
         return out_mp4
@@ -266,11 +291,7 @@ def _save_pipeline_output_to_mp4(result: Any) -> str:
 
     raise RuntimeError(f"Unknown pipeline output type: {type(result)} (no path/video_path/save)")
 
-
 def generate_video_ltx2(job_input: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Text-to-video initial implementation.
-    """
     global pipeline_hq, pipeline_fast
 
     prompt = (job_input.get("prompt") or "").strip()
@@ -288,7 +309,6 @@ def generate_video_ltx2(job_input: Dict[str, Any]) -> Dict[str, Any]:
     guidance_scale = float(job_input.get("guidance_scale", 7.5))
     enhance_prompt = bool(job_input.get("enhance_prompt", True))
 
-    # Ensure weights exist + pipelines loaded
     if pipeline_hq is None or pipeline_fast is None:
         initialize_models()
 
@@ -299,7 +319,6 @@ def generate_video_ltx2(job_input: Dict[str, Any]) -> Dict[str, Any]:
     print(f"🎬 LTX2 generating: {duration}s {width}x{height} fps={fps} frames={num_frames} steps={steps} quality={quality}")
     start = time.time()
 
-    # Call pipeline
     result = selected(  # type: ignore
         prompt=prompt,
         height=height,
@@ -336,7 +355,6 @@ def generate_video_ltx2(job_input: Dict[str, Any]) -> Dict[str, Any]:
         },
     }
 
-
 # -----------------------
 # RunPod handler
 # -----------------------
@@ -366,7 +384,6 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             "error": str(e),
             "worker_version": WORKER_VERSION,
         }
-
 
 # IMPORTANT:
 # Only start serverless when run as main.
