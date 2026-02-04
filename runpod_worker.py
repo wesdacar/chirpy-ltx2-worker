@@ -152,10 +152,11 @@ LTX2_FILES = [
         "ltx-2-spatial-upscaler-x2-1.0.safetensors",
         "https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-spatial-upscaler-x2-1.0.safetensors",
     ),
-    (
-        "ltx-2-19b-distilled-lora-384.safetensors",
-        "https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-19b-distilled-lora-384.safetensors",
-    ),
+    # 🚫 DISABLED FOR NOW — this file is 7.6GB and kills runtime
+    # (
+    #     "ltx-2-19b-distilled-lora-384.safetensors",
+    #     "https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-19b-distilled-lora-384.safetensors",
+    # ),
 ]
 
 
