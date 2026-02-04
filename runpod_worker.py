@@ -1,22 +1,23 @@
 """
-LTX2 Video Generation RunPod Worker
+LTX2 Video Generation RunPod Worker (Chirpy)
 
 Modes:
-- smoke: generate 1s black MP4 and upload to R2
-- ltx2: download LTX2 weights into MODEL_PATH, init FAST pipeline, attempt generation, upload to R2
+- smoke: generate 1s MP4 + upload to R2 (health check)
+- ltx2 : initialize LTX2 pipelines, generate video, upload to R2
 
-Required env vars for R2:
+Required R2 env vars:
 - R2_ENDPOINT
 - R2_ACCESS_KEY_ID
 - R2_SECRET_ACCESS_KEY
 - R2_BUCKET
 
-Strongly recommended env vars on RunPod:
+Recommended RunPod env vars:
 - MODEL_PATH=/runpod-volume/models
 - TMP_DIR=/runpod-volume/tmp
-- TMPDIR=/runpod-volume/tmp
-- TMP=/runpod-volume/tmp
-- TEMP=/runpod-volume/tmp
+- GEMMA_ROOT=/runpod-volume/gemma
+- HF_TOKEN=<huggingface token>
+Optional:
+- GEMMA_REPO=google/gemma-3-4b-it   (must be a repo your token can access)
 """
 
 import os
@@ -24,64 +25,65 @@ import uuid
 import time
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, Optional, List, Tuple
+from typing import Any, Dict, Optional, List
+
+import boto3
+from botocore.config import Config
+import runpod
+
 
 # -----------------------
-# Pick writable base FIRST (before importing runpod)
+# Version + disk paths
 # -----------------------
-def pick_writable_base() -> str:
-    candidates = [
-        os.getenv("RUNPOD_VOLUME_PATH", "").strip(),
+WORKER_VERSION = "v-ltx2-fixed-gemma-1"
+print(f"✅ Worker booted: {WORKER_VERSION}")
+
+def _pick_base() -> str:
+    for base in [
+        os.getenv("RUNPOD_VOLUME_PATH", ""),
         "/runpod-volume",
         "/workspace",
         "/volume",
         "/data",
         "/mnt",
         "/tmp",
-    ]
-    for base in candidates:
+    ]:
         if not base:
             continue
         try:
-            p = Path(base)
-            p.mkdir(parents=True, exist_ok=True)
-            test = p / ".write_test"
+            Path(base).mkdir(parents=True, exist_ok=True)
+            test = Path(base) / ".write_test"
             test.write_text("ok")
             test.unlink()
-            return str(p)
+            return base
         except Exception:
-            continue
+            pass
     return "/tmp"
 
-BASE = pick_writable_base()
+BASE = _pick_base()
 
-# Resolve MODEL/TMP paths (env wins, otherwise use BASE)
-MODEL_PATH = os.getenv("MODEL_PATH", str(Path(BASE) / "models"))
-TMP_DIR    = os.getenv("TMP_DIR",    str(Path(BASE) / "tmp"))
+# Support both names, because you used both during the last 3 days
+MODEL_PATH = (
+    os.getenv("MODEL_PATH")
+    or os.getenv("MODEL_PATH")
+    or str(Path(BASE) / "models")
+)
+TMP_DIR = os.getenv("TMP_DIR") or str(Path(BASE) / "tmp")
+GEMMA_ROOT = os.getenv("GEMMA_ROOT") or str(Path(BASE) / "gemma")
+GEMMA_REPO = os.getenv("GEMMA_REPO") or "google/gemma-3-4b-it"
 
 Path(MODEL_PATH).mkdir(parents=True, exist_ok=True)
 Path(TMP_DIR).mkdir(parents=True, exist_ok=True)
+Path(GEMMA_ROOT).mkdir(parents=True, exist_ok=True)
 
-# Force ALL temp usage onto TMP_DIR (must happen before importing runpod)
+# Force temp usage away from /app/tmp
 os.environ["TMPDIR"] = TMP_DIR
-os.environ["TMP"] = TMP_DIR
 os.environ["TEMP"] = TMP_DIR
+os.environ["TMP"] = TMP_DIR
+
 
 # -----------------------
-# Now safe to import libs that may cache temp dirs
-# -----------------------
-import boto3
-from botocore.config import Config
-import runpod
-
-WORKER_VERSION = "v-ltx2-clean-full-2"
-print(f"✅ Worker booted: {WORKER_VERSION}")
-print(f"📁 BASE={BASE}")
-print(f"📁 MODEL_PATH={MODEL_PATH}")
-print(f"📁 TMP_DIR={TMP_DIR}")
-
-# -----------------------
-# R2 upload helper
+# R2 upload
 # -----------------------
 def upload_file_to_r2(local_path: str, content_type: str = "video/mp4") -> str:
     required = ["R2_ENDPOINT", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"]
@@ -89,21 +91,17 @@ def upload_file_to_r2(local_path: str, content_type: str = "video/mp4") -> str:
     if missing:
         raise RuntimeError(f"Missing R2 env vars: {', '.join(missing)}")
 
-    endpoint = os.environ["R2_ENDPOINT"]
-    access_key = os.environ["R2_ACCESS_KEY_ID"]
-    secret_key = os.environ["R2_SECRET_ACCESS_KEY"]
-    bucket = os.environ["R2_BUCKET"]
-
-    key = f"ltx2/{uuid.uuid4().hex}.mp4"
-
     s3 = boto3.client(
         "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
+        endpoint_url=os.environ["R2_ENDPOINT"],
+        aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+        aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
         config=Config(signature_version="s3v4"),
         region_name="auto",
     )
+
+    bucket = os.environ["R2_BUCKET"]
+    key = f"ltx2/{uuid.uuid4().hex}.mp4"
 
     s3.upload_file(
         Filename=local_path,
@@ -118,69 +116,91 @@ def upload_file_to_r2(local_path: str, content_type: str = "video/mp4") -> str:
         ExpiresIn=60 * 60,
     )
 
+
 # -----------------------
-# Smoke test
+# Smoke mode
 # -----------------------
 def generate_video_smoke(job_input: Dict[str, Any]) -> Dict[str, Any]:
     prompt = job_input.get("prompt", "Hello")
-    out_mp4 = str(Path(TMP_DIR) / f"ltx2_smoke_{uuid.uuid4().hex}.mp4")
+    out_mp4 = str(Path(TMP_DIR) / f"smoke_{uuid.uuid4().hex}.mp4")
 
     subprocess.run(
-        [
-            "ffmpeg", "-y",
-            "-f", "lavfi",
-            "-i", "color=c=black:s=1280x720:r=24",
-            "-t", "1",
-            "-pix_fmt", "yuv420p",
-            out_mp4
-        ],
+        ["ffmpeg", "-y",
+         "-f", "lavfi", "-i", "color=c=black:s=1280x720:r=24",
+         "-t", "1",
+         "-pix_fmt", "yuv420p",
+         out_mp4],
         check=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
 
     video_url = upload_file_to_r2(out_mp4)
-
     return {
         "success": True,
         "mode": "smoke",
         "message": "R2 upload smoke test succeeded",
         "echo": prompt,
+        "paths": {"model_path": MODEL_PATH, "tmp_dir": TMP_DIR, "gemma_root": GEMMA_ROOT},
         "video_url": video_url,
         "worker_version": WORKER_VERSION,
-        "paths": {"model_path": MODEL_PATH, "tmp_dir": TMP_DIR},
     }
 
+
 # -----------------------
-# LTX-2 weights
+# LTX2 model files
 # -----------------------
-LTX2_FILES: List[Tuple[str, str]] = [
-    (
-        "ltx-2-19b-distilled-fp8.safetensors",
-        "https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-19b-distilled-fp8.safetensors",
-    ),
-    (
-        "ltx-2-spatial-upscaler-x2-1.0.safetensors",
-        "https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-spatial-upscaler-x2-1.0.safetensors",
-    ),
-    (
-        "ltx-2-19b-distilled-lora-384.safetensors",
-        "https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-19b-distilled-lora-384.safetensors",
-    ),
+LTX2_FILES = [
+    ("ltx-2-19b-distilled-fp8.safetensors",
+     "https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-19b-distilled-fp8.safetensors"),
+    ("ltx-2-spatial-upscaler-x2-1.0.safetensors",
+     "https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-spatial-upscaler-x2-1.0.safetensors"),
+    ("ltx-2-19b-distilled-lora-384.safetensors",
+     "https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-19b-distilled-lora-384.safetensors"),
 ]
 
-def ensure_models() -> None:
+def ensure_ltx_models() -> None:
     Path(MODEL_PATH).mkdir(parents=True, exist_ok=True)
-
     for fname, url in LTX2_FILES:
         dst = Path(MODEL_PATH) / fname
         if dst.exists() and dst.stat().st_size > 0:
-            print(f"✅ Already have {fname} ({dst.stat().st_size} bytes)")
+            print(f"✅ Already have {fname}")
             continue
-
         print(f"⬇️ Downloading {fname} -> {dst}")
         subprocess.check_call(["wget", "-c", "-O", str(dst), url])
         print(f"✅ Downloaded {fname}")
+
+
+# -----------------------
+# Gemma download (required by your installed LTX pipelines)
+# -----------------------
+def ensure_gemma() -> None:
+    # If folder already has content, assume it's ok
+    if any(Path(GEMMA_ROOT).iterdir()):
+        print(f"✅ Gemma root already populated: {GEMMA_ROOT}")
+        return
+
+    hf_token = os.getenv("HF_TOKEN")
+    if not hf_token:
+        raise RuntimeError(
+            "Gemma is required by this LTX pipeline build, but HF_TOKEN is not set. "
+            "Add HF_TOKEN + GEMMA_ROOT env vars in RunPod."
+        )
+
+    print(f"⬇️ Downloading Gemma repo {GEMMA_REPO} -> {GEMMA_ROOT}")
+
+    from huggingface_hub import snapshot_download
+
+    snapshot_download(
+        repo_id=GEMMA_REPO,
+        local_dir=GEMMA_ROOT,
+        local_dir_use_symlinks=False,
+        token=hf_token,
+        # Keep it simple first; we can restrict patterns after we confirm it boots
+    )
+
+    print("✅ Gemma download complete")
+
 
 # -----------------------
 # Import LTX pipelines
@@ -202,45 +222,68 @@ except Exception as e:
     LTX_IMPORT_ERROR = f"{type(e).__name__}: {e}"
     print(f"❌ LTX import failed: {LTX_IMPORT_ERROR}")
 
+
+# -----------------------
+# Pipelines (lazy init)
+# -----------------------
+pipeline_hq = None
 pipeline_fast = None
 
-def initialize_models() -> None:
+def initialize_pipelines() -> None:
     """
-    We only init FAST pipeline here (no Gemma dependency).
-    HQ pipeline needs Gemma + extra args and can be added later.
+    Your current runtime errors show these are REQUIRED:
+      - distilled_lora
+      - spatial_upsampler_path
+      - gemma_root
+      - loras
     """
-    global pipeline_fast
+    global pipeline_hq, pipeline_fast
 
     if not LTX_AVAILABLE:
         raise RuntimeError(f"LTX2 packages not available. Import error: {LTX_IMPORT_ERROR}")
 
-    if pipeline_fast is not None:
+    if pipeline_hq is not None and pipeline_fast is not None:
         return
 
-    print("🧠 Initializing LTX2 FAST pipeline...")
+    print("🧠 Initializing LTX2 pipelines...")
 
-    ensure_models()
+    ensure_ltx_models()
+    ensure_gemma()
 
     fp8_path = str(Path(MODEL_PATH) / "ltx-2-19b-distilled-fp8.safetensors")
+    up_path  = str(Path(MODEL_PATH) / "ltx-2-spatial-upscaler-x2-1.0.safetensors")
     lora_path = str(Path(MODEL_PATH) / "ltx-2-19b-distilled-lora-384.safetensors")
-    upsampler_path = str(Path(MODEL_PATH) / "ltx-2-spatial-upscaler-x2-1.0.safetensors")
 
-    attempts = []
-    for label, args in [
-        ("pos_fp8", [fp8_path]),
-        ("pos_fp8_lora", [fp8_path, lora_path]),
-        ("pos_fp8_lora_upsampler", [fp8_path, lora_path, upsampler_path]),
-    ]:
-        try:
-            pipeline_fast = DistilledPipeline(*args)  # type: ignore
-            print(f"✅ FAST pipeline ready via {label}: {type(pipeline_fast)}")
-            return
-        except Exception as e:
-            attempts.append(f"{label}: {type(e).__name__}: {e}")
+    # IMPORTANT: loras is a list
+    loras: List[str] = [lora_path]
 
-    raise RuntimeError("Failed to init FAST pipeline:\n" + "\n".join(attempts))
+    # HQ pipeline
+    try:
+        pipeline_hq = TI2VidTwoStagesPipeline(  # type: ignore
+            fp8_path,
+            lora_path,
+            up_path,
+            GEMMA_ROOT,
+            loras,
+        )
+    except Exception as e:
+        raise RuntimeError(f"Failed to init HQ pipeline via positional signature: {type(e).__name__}: {e}")
 
-def _save_pipeline_output_to_mp4(result: Any) -> str:
+    # Fast pipeline
+    try:
+        pipeline_fast = DistilledPipeline(  # type: ignore
+            fp8_path,
+            GEMMA_ROOT,
+            up_path,
+            loras,
+        )
+    except Exception as e:
+        raise RuntimeError(f"Failed to init FAST pipeline via positional signature: {type(e).__name__}: {e}")
+
+    print(f"✅ Pipelines ready: hq={type(pipeline_hq)} fast={type(pipeline_fast)}")
+
+
+def _save_to_mp4(result: Any) -> str:
     out_mp4 = str(Path(TMP_DIR) / f"ltx2_{uuid.uuid4().hex}.mp4")
 
     if isinstance(result, str) and Path(result).exists():
@@ -248,7 +291,7 @@ def _save_pipeline_output_to_mp4(result: Any) -> str:
         return out_mp4
 
     if isinstance(result, dict):
-        for k in ("video_path", "path", "mp4"):
+        for k in ["video_path", "path", "mp4"]:
             vp = result.get(k)
             if isinstance(vp, str) and Path(vp).exists():
                 Path(vp).rename(out_mp4)
@@ -259,69 +302,65 @@ def _save_pipeline_output_to_mp4(result: Any) -> str:
         if Path(out_mp4).exists():
             return out_mp4
 
-    raise RuntimeError(f"Unknown pipeline output type: {type(result)} (no save/path)")
+    raise RuntimeError(f"Unknown pipeline output type: {type(result)}")
+
 
 def generate_video_ltx2(job_input: Dict[str, Any]) -> Dict[str, Any]:
     prompt = (job_input.get("prompt") or "").strip()
     if not prompt:
         return {"success": False, "error": "No prompt provided", "worker_version": WORKER_VERSION}
 
-    # Keep it light while we stabilize: small defaults
-    duration = int(job_input.get("duration", 2))
-    fps = int(job_input.get("fps", 16))
-    width = int(job_input.get("width", 768))
-    height = int(job_input.get("height", 432))
-    steps = int(job_input.get("steps", 8))
+    duration = int(job_input.get("duration", 1))
+    fps = int(job_input.get("fps", 8))
+    width = int(job_input.get("width", 512))
+    height = int(job_input.get("height", 288))
+    quality = (job_input.get("quality", "fast") or "fast").lower()
 
     num_frames = duration * fps
-    guidance_scale = float(job_input.get("guidance_scale", 7.5))
-    enhance_prompt = bool(job_input.get("enhance_prompt", True))
+    steps = int(job_input.get("steps", 4 if quality == "fast" else 20))
 
-    initialize_models()
-    if pipeline_fast is None:
-        raise RuntimeError("pipeline_fast is None after initialize_models()")
+    initialize_pipelines()
 
-    print(f"🎬 LTX2 FAST generating: {duration}s {width}x{height} fps={fps} frames={num_frames} steps={steps}")
+    selected = pipeline_fast if quality == "fast" else pipeline_hq
+    if selected is None:
+        raise RuntimeError("Selected pipeline is None")
 
+    print(f"🎬 Generating: {duration}s {width}x{height} frames={num_frames} steps={steps} quality={quality}")
     start = time.time()
-    result = pipeline_fast(  # type: ignore
+
+    result = selected(  # type: ignore
         prompt=prompt,
         height=height,
         width=width,
         num_frames=num_frames,
         num_inference_steps=steps,
-        guidance_scale=guidance_scale,
-        enhance_prompt=enhance_prompt,
+        guidance_scale=float(job_input.get("guidance_scale", 4.0)),
+        enhance_prompt=bool(job_input.get("enhance_prompt", False)),
     )
-    gen_time = time.time() - start
-    print(f"⚡ LTX2 generation finished in {gen_time:.2f}s")
 
-    out_mp4 = _save_pipeline_output_to_mp4(result)
+    gen_time = time.time() - start
+    print(f"⚡ Done in {gen_time:.2f}s")
+
+    out_mp4 = _save_to_mp4(result)
     video_url = upload_file_to_r2(out_mp4)
 
     return {
         "success": True,
         "mode": "ltx2",
+        "quality": quality,
         "video_url": video_url,
         "generation_time": gen_time,
         "worker_version": WORKER_VERSION,
-        "meta": {
-            "prompt": prompt,
-            "duration": duration,
-            "fps": fps,
-            "width": width,
-            "height": height,
-            "frames": num_frames,
-            "steps": steps,
-        },
-        "paths": {"model_path": MODEL_PATH, "tmp_dir": TMP_DIR},
+        "paths": {"model_path": MODEL_PATH, "tmp_dir": TMP_DIR, "gemma_root": GEMMA_ROOT},
     }
 
-def handler(job: Dict[str, Any]) -> Dict[str, Any]:
-    if not isinstance(job, dict) or "input" not in job:
-        return {"success": False, "error": "Job missing field(s): id or input.", "worker_version": WORKER_VERSION}
 
-    job_id = job.get("id", "unknown")
+# -----------------------
+# RunPod handler
+# -----------------------
+def handler(job: Dict[str, Any]) -> Dict[str, Any]:
+    # Protect against RunPod odd jobs missing keys
+    job_id = job.get("id") or job.get("requestId") or "unknown"
     print(f"📦 Processing job {job_id}")
 
     try:
@@ -340,7 +379,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         print(f"❌ Job {job_id} failed: {e}")
         return {"success": False, "job_id": job_id, "error": str(e), "worker_version": WORKER_VERSION}
 
+
 if __name__ == "__main__":
     print("🚀 Starting RunPod serverless worker")
     runpod.serverless.start({"handler": handler})
- 
