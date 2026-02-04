@@ -223,8 +223,8 @@ def initialize_models() -> None:
     """
     Initialize LTX-2 pipelines once.
 
-    Your installed LTX pipeline uses a constructor API.
-    HQ pipeline requires `distilled_lora`.
+    Different LTX2 builds expose different constructor signatures, so we try a
+    few compatible patterns until one works.
     """
     global pipeline_hq, pipeline_fast
 
@@ -241,29 +241,59 @@ def initialize_models() -> None:
     upscaler_path = str(Path(MODEL_PATH) / "ltx-2-spatial-upscaler-x2-1.0.safetensors")
     lora_path = str(Path(MODEL_PATH) / "ltx-2-19b-distilled-lora-384.safetensors")
 
-    # HQ pipeline (two-stage): requires distilled_lora
-    try:
-        pipeline_hq = TI2VidTwoStagesPipeline(  # type: ignore
-            fp8_path,
-            spatial_upscaler=upscaler_path,
-            distilled_lora=lora_path,
-        )
-    except TypeError:
-        # some versions rename args
-        pipeline_hq = TI2VidTwoStagesPipeline(  # type: ignore
-            fp8_path,
-            upscaler=upscaler_path,
-            distilled_lora=lora_path,
-        )
+    # ---- HQ pipeline: try multiple signatures
+    last_err = None
+    attempts = [
+        ("kw_spatial_upscaler",
+         lambda: TI2VidTwoStagesPipeline(fp8_path, spatial_upscaler=upscaler_path, distilled_lora=lora_path)),
+        ("kw_upscaler",
+         lambda: TI2VidTwoStagesPipeline(fp8_path, upscaler=upscaler_path, distilled_lora=lora_path)),
+        ("positional_3",
+         lambda: TI2VidTwoStagesPipeline(fp8_path, upscaler_path, lora_path)),
+        ("positional_2_plus_kw_lora",
+         lambda: TI2VidTwoStagesPipeline(fp8_path, upscaler_path, distilled_lora=lora_path)),
+        ("positional_2",
+         lambda: TI2VidTwoStagesPipeline(fp8_path, upscaler_path)),
+        ("fp8_only_plus_kw",
+         lambda: TI2VidTwoStagesPipeline(fp8_path, distilled_lora=lora_path)),
+        ("fp8_only",
+         lambda: TI2VidTwoStagesPipeline(fp8_path)),
+    ]
 
-    # Fast pipeline (distilled)
-    try:
-        pipeline_fast = DistilledPipeline(  # type: ignore
-            fp8_path,
-            distilled_lora=lora_path,
-        )
-    except TypeError:
-        pipeline_fast = DistilledPipeline(fp8_path)  # type: ignore
+    for name, fn in attempts:
+        try:
+            pipeline_hq = fn()
+            print(f"✅ HQ pipeline init OK via: {name}")
+            break
+        except Exception as e:
+            last_err = e
+            print(f"⚠️ HQ pipeline init failed via {name}: {type(e).__name__}: {e}")
+
+    if pipeline_hq is None:
+        raise RuntimeError(f"Failed to init HQ pipeline. Last error: {type(last_err).__name__}: {last_err}")
+
+    # ---- Fast pipeline: also try multiple signatures
+    last_err = None
+    fast_attempts = [
+        ("kw_lora",
+         lambda: DistilledPipeline(fp8_path, distilled_lora=lora_path)),
+        ("positional_2",
+         lambda: DistilledPipeline(fp8_path, lora_path)),
+        ("fp8_only",
+         lambda: DistilledPipeline(fp8_path)),
+    ]
+
+    for name, fn in fast_attempts:
+        try:
+            pipeline_fast = fn()
+            print(f"✅ Fast pipeline init OK via: {name}")
+            break
+        except Exception as e:
+            last_err = e
+            print(f"⚠️ Fast pipeline init failed via {name}: {type(e).__name__}: {e}")
+
+    if pipeline_fast is None:
+        raise RuntimeError(f"Failed to init fast pipeline. Last error: {type(last_err).__name__}: {last_err}")
 
     print(f"✅ Pipelines loaded: hq={type(pipeline_hq)} fast={type(pipeline_fast)}")
 
